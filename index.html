@@ -48,3 +48,832 @@
 </script>
 </body>
 </html>
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Zombie Shooter - Top Down</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #111;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+    margin: 0 auto;
+  }
+</style>
+</head>
+<body>
+
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script>
+
+// ==============================
+// CONFIGURACIÓN GLOBAL
+// ==============================
+const config = {
+  type: Phaser.AUTO,
+  width: 800,
+  height: 600,
+  backgroundColor: '#2d2d2d',
+  physics: {
+    default: 'arcade',
+    arcade: {
+      gravity: { y: 0 },
+      debug: false
+    }
+  },
+  scene: {
+    preload: preload,
+    create: create,
+    update: update
+  }
+};
+
+// Variables globales de la escena
+let player;
+let wasdKeys;
+let bullets;
+let zombies;
+let restartKey;
+
+let healthText;
+let gameOverText;
+
+// Estado del juego
+let playerHealth = 3;
+const MAX_HEALTH = 3;
+let isGameOver = false;
+let zombieSpawnTimer;
+
+// Ajustes de gameplay (fáciles de tunear más adelante)
+const PLAYER_SPEED = 250;
+const BULLET_SPEED = 700;
+const FIRE_COOLDOWN = 150;      // ms entre disparos
+const ZOMBIE_SPEED = 90;
+const ZOMBIE_SPAWN_MIN = 2000;  // ms
+const ZOMBIE_SPAWN_MAX = 3000;  // ms
+const ZOMBIE_HIT_COOLDOWN = 800; // ms de invulnerabilidad tras recibir daño
+let lastFired = 0;
+let lastHitTime = 0;
+
+const game = new Phaser.Game(config);
+
+// ==============================
+// PRELOAD
+// ==============================
+function preload() {
+  // Generamos texturas simples con Graphics (sin assets externos).
+
+  // Textura del jugador: círculo verde con marca de "cañón"
+  const playerGfx = this.make.graphics({ x: 0, y: 0, add: false });
+  playerGfx.fillStyle(0x00ff66, 1);
+  playerGfx.fillCircle(16, 16, 16);
+  playerGfx.fillStyle(0xffffff, 1);
+  playerGfx.fillRect(16, 13, 14, 6);
+  playerGfx.generateTexture('player', 32, 32);
+  playerGfx.destroy();
+
+  // Textura de la bala: círculo amarillo pequeño
+  const bulletGfx = this.make.graphics({ x: 0, y: 0, add: false });
+  bulletGfx.fillStyle(0xffff00, 1);
+  bulletGfx.fillCircle(4, 4, 4);
+  bulletGfx.generateTexture('bullet', 8, 8);
+  bulletGfx.destroy();
+
+  // Textura del zombie: círculo rojo
+  const zombieGfx = this.make.graphics({ x: 0, y: 0, add: false });
+  zombieGfx.fillStyle(0xff0000, 1);
+  zombieGfx.fillCircle(14, 14, 14);
+  zombieGfx.lineStyle(2, 0x770000, 1);
+  zombieGfx.strokeCircle(14, 14, 14);
+  zombieGfx.generateTexture('zombie', 28, 28);
+  zombieGfx.destroy();
+}
+
+// ==============================
+// CREATE
+// ==============================
+function create() {
+  // Reset de estado (útil al reiniciar la escena)
+  playerHealth = MAX_HEALTH;
+  isGameOver = false;
+  lastFired = 0;
+  lastHitTime = 0;
+
+  // ----- Jugador -----
+  player = this.physics.add.image(400, 300, 'player');
+  player.setCollideWorldBounds(true);
+  player.setDrag(600, 600);
+  player.setMaxVelocity(PLAYER_SPEED);
+
+  // ----- Grupo de balas -----
+  bullets = this.physics.add.group({
+    defaultKey: 'bullet',
+    maxSize: 100
+  });
+
+  // ----- Grupo de zombies -----
+  zombies = this.physics.add.group();
+
+  // ----- Input teclado (WASD) -----
+  wasdKeys = this.input.keyboard.addKeys({
+    up: Phaser.Input.Keyboard.KeyCodes.W,
+    down: Phaser.Input.Keyboard.KeyCodes.S,
+    left: Phaser.Input.Keyboard.KeyCodes.A,
+    right: Phaser.Input.Keyboard.KeyCodes.D
+  });
+
+  restartKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.R);
+
+  // ----- Input ratón: disparo con clic izquierdo -----
+  this.input.on('pointerdown', (p) => {
+    if (p.leftButtonDown() && !isGameOver) {
+      shoot(this, p);
+    }
+  });
+
+  // ----- HUD -----
+  healthText = this.add.text(16, 16, 'Vida: ❤️❤️❤️', {
+    fontSize: '20px',
+    fontFamily: 'Arial',
+    color: '#ffffff'
+  }).setScrollFactor(0).setDepth(10);
+
+  gameOverText = this.add.text(400, 300, '', {
+    fontSize: '40px',
+    fontFamily: 'Arial',
+    color: '#ff3333',
+    align: 'center'
+  }).setOrigin(0.5).setDepth(20).setVisible(false);
+
+  // ----- Colisiones -----
+  // Bala vs Zombie: destruye ambos (bala y zombie)
+  this.physics.add.overlap(bullets, zombies, onBulletHitsZombie, null, this);
+
+  // Zombie vs Jugador: resta vida
+  this.physics.add.overlap(player, zombies, onZombieHitsPlayer, null, this);
+
+  // ----- Spawner de zombies -----
+  scheduleNextZombie(this);
+}
+
+// ==============================
+// UPDATE (loop principal)
+// ==============================
+function update(time, delta) {
+  if (isGameOver) {
+    if (Phaser.Input.Keyboard.JustDown(restartKey)) {
+      restartGame(this);
+    }
+    return;
+  }
+
+  handleMovement();
+  handleRotation();
+  handleZombieAI();
+  cleanupBullets();
+}
+
+// ------------------------------
+// Movimiento del jugador (8 direcciones)
+// ------------------------------
+function handleMovement() {
+  const moveVector = new Phaser.Math.Vector2(0, 0);
+
+  if (wasdKeys.left.isDown)  moveVector.x -= 1;
+  if (wasdKeys.right.isDown) moveVector.x += 1;
+  if (wasdKeys.up.isDown)    moveVector.y -= 1;
+  if (wasdKeys.down.isDown)  moveVector.y += 1;
+
+  if (moveVector.length() > 0) {
+    moveVector.normalize();
+    player.setVelocity(moveVector.x * PLAYER_SPEED, moveVector.y * PLAYER_SPEED);
+  } else {
+    player.setVelocity(0, 0);
+  }
+}
+
+// ------------------------------
+// Rotación del jugador hacia el cursor
+// ------------------------------
+function handleRotation() {
+  const p = player.scene.input.activePointer;
+  const worldPoint = p.positionToCamera(player.scene.cameras.main);
+
+  const angle = Phaser.Math.Angle.Between(
+    player.x, player.y,
+    worldPoint.x, worldPoint.y
+  );
+
+  player.rotation = angle;
+}
+
+// ------------------------------
+// Disparo
+// ------------------------------
+function shoot(scene, pointerObj) {
+  const now = scene.time.now;
+  if (now < lastFired + FIRE_COOLDOWN) return;
+  lastFired = now;
+
+  const bullet = bullets.get(player.x, player.y);
+  if (!bullet) return;
+
+  bullet.setActive(true);
+  bullet.setVisible(true);
+  if (bullet.body) {
+    bullet.body.enable = true;
+  }
+
+  bullet.setPosition(player.x, player.y);
+
+  const angle = player.rotation;
+  scene.physics.velocityFromRotation(angle, BULLET_SPEED, bullet.body.velocity);
+
+  bullet.lifespan = 1500;
+  bullet.spawnTime = scene.time.now;
+}
+
+// ------------------------------
+// Limpieza de balas fuera de pantalla o caducadas
+// ------------------------------
+function cleanupBullets() {
+  bullets.children.each((bullet) => {
+    if (!bullet.active) return;
+
+    const outOfBounds =
+      bullet.x < -20 || bullet.x > 820 ||
+      bullet.y < -20 || bullet.y > 620;
+
+    const expired = (game.loop.time - bullet.spawnTime) > bullet.lifespan;
+
+    if (outOfBounds || expired) {
+      deactivateBullet(bullet);
+    }
+  });
+}
+
+function deactivateBullet(bullet) {
+  bullet.setActive(false);
+  bullet.setVisible(false);
+  if (bullet.body) {
+    bullet.body.stop();
+    bullet.body.enable = false;
+  }
+}
+
+// ==============================
+// ZOMBIES
+// ==============================
+
+// ------------------------------
+// Programa el siguiente spawn de zombie (entre 2 y 3 segundos)
+// ------------------------------
+function scheduleNextZombie(scene) {
+  const delay = Phaser.Math.Between(ZOMBIE_SPAWN_MIN, ZOMBIE_SPAWN_MAX);
+  zombieSpawnTimer = scene.time.addEvent({
+    delay: delay,
+    callback: () => {
+      if (!isGameOver) {
+        spawnZombie(scene);
+      }
+      scheduleNextZombie(scene);
+    }
+  });
+}
+
+// ------------------------------
+// Crea un zombie fuera de la pantalla en un borde aleatorio
+// ------------------------------
+function spawnZombie(scene) {
+  const side = Phaser.Math.Between(0, 3); // 0=arriba, 1=abajo, 2=izquierda, 3=derecha
+  let x, y;
+  const margin = 40;
+
+  switch (side) {
+    case 0: // arriba
+      x = Phaser.Math.Between(0, 800);
+      y = -margin;
+      break;
+    case 1: // abajo
+      x = Phaser.Math.Between(0, 800);
+      y = 600 + margin;
+      break;
+    case 2: // izquierda
+      x = -margin;
+      y = Phaser.Math.Between(0, 600);
+      break;
+    case 3: // derecha
+      x = 800 + margin;
+      y = Phaser.Math.Between(0, 600);
+      break;
+  }
+
+  const zombie = scene.physics.add.image(x, y, 'zombie');
+  zombies.add(zombie);
+  zombie.setCollideWorldBounds(false);
+}
+
+// ------------------------------
+// IA: cada zombie se mueve directamente hacia el jugador
+// ------------------------------
+function handleZombieAI() {
+  zombies.children.each((zombie) => {
+    if (!zombie.active) return;
+
+    player.scene.physics.moveToObject(zombie, player, ZOMBIE_SPEED);
+
+    // Opcional: que el zombie "mire" hacia el jugador
+    const angle = Phaser.Math.Angle.Between(zombie.x, zombie.y, player.x, player.y);
+    zombie.rotation = angle;
+  });
+}
+
+// ==============================
+// COLISIONES
+// ==============================
+
+// ------------------------------
+// Bala impacta zombie -> ambos desaparecen
+// ------------------------------
+function onBulletHitsZombie(bullet, zombie) {
+  deactivateBullet(bullet);
+  zombie.destroy();
+}
+
+// ------------------------------
+// Zombie toca al jugador -> pierde vida
+// ------------------------------
+function onZombieHitsPlayer(playerObj, zombie) {
+  const scene = playerObj.scene;
+  const now = scene.time.now;
+
+  // Cooldown de invulnerabilidad para no perder varias vidas en el mismo contacto sostenido
+  if (now < lastHitTime + ZOMBIE_HIT_COOLDOWN) return;
+  lastHitTime = now;
+
+  zombie.destroy();
+  playerHealth -= 1;
+  updateHealthText();
+
+  if (playerHealth <= 0) {
+    triggerGameOver(scene);
+  }
+}
+
+// ==============================
+// HUD / VIDA
+// ==============================
+function updateHealthText() {
+  const hearts = '❤️'.repeat(Math.max(playerHealth, 0)) + '🖤'.repeat(MAX_HEALTH - Math.max(playerHealth, 0));
+  healthText.setText('Vida: ' + hearts);
+}
+
+// ==============================
+// GAME OVER
+// ==============================
+function triggerGameOver(scene) {
+  isGameOver = true;
+
+  // Detiene spawns y movimiento
+  if (zombieSpawnTimer) zombieSpawnTimer.remove(false);
+
+  player.setVelocity(0, 0);
+  zombies.children.each((z) => z.setVelocity(0, 0));
+
+  gameOverText.setText('GAME OVER\nPresiona R para reiniciar').setVisible(true);
+
+  scene.physics.pause();
+}
+
+// ------------------------------
+// Reinicio del juego
+// ------------------------------
+function restartGame(scene) {
+  scene.physics.resume();
+  scene.scene.restart();
+}
+
+</script>
+</body>
+</html>
+
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Zombie Shooter - Top Down</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #111;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+    margin: 0 auto;
+  }
+</style>
+</head>
+<body>
+
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+<script>
+
+// ==============================
+// CONFIGURACIÓN GLOBAL
+// ==============================
+const config = {
+  type: Phaser.AUTO,
+  width: 800,
+  height: 600,
+  backgroundColor: '#2d2d2d',
+  physics: {
+    default: 'arcade',
+    arcade: {
+      gravity: { y: 0 },
+      debug: false
+    }
+  },
+  scene: {
+    preload: preload,
+    create: create,
+    update: update
+  }
+};
+
+// Variables globales de la escena
+let player;
+let wasdKeys;
+let bullets;
+let zombies;
+let restartKey;
+
+let healthText;
+let gameOverText;
+
+// Estado del juego
+let playerHealth = 3;
+const MAX_HEALTH = 3;
+let isGameOver = false;
+let zombieSpawnTimer;
+
+// Ajustes de gameplay (fáciles de tunear más adelante)
+const PLAYER_SPEED = 250;
+const BULLET_SPEED = 700;
+const FIRE_COOLDOWN = 150;      // ms entre disparos
+const ZOMBIE_SPEED = 90;
+const ZOMBIE_SPAWN_MIN = 2000;  // ms
+const ZOMBIE_SPAWN_MAX = 3000;  // ms
+const ZOMBIE_HIT_COOLDOWN = 800; // ms de invulnerabilidad tras recibir daño
+let lastFired = 0;
+let lastHitTime = 0;
+
+const game = new Phaser.Game(config);
+
+// ==============================
+// PRELOAD
+// ==============================
+function preload() {
+  // Generamos texturas simples con Graphics (sin assets externos).
+
+  // Textura del jugador: círculo verde con marca de "cañón"
+  const playerGfx = this.make.graphics({ x: 0, y: 0, add: false });
+  playerGfx.fillStyle(0x00ff66, 1);
+  playerGfx.fillCircle(16, 16, 16);
+  playerGfx.fillStyle(0xffffff, 1);
+  playerGfx.fillRect(16, 13, 14, 6);
+  playerGfx.generateTexture('player', 32, 32);
+  playerGfx.destroy();
+
+  // Textura de la bala: círculo amarillo pequeño
+  const bulletGfx = this.make.graphics({ x: 0, y: 0, add: false });
+  bulletGfx.fillStyle(0xffff00, 1);
+  bulletGfx.fillCircle(4, 4, 4);
+  bulletGfx.generateTexture('bullet', 8, 8);
+  bulletGfx.destroy();
+
+  // Textura del zombie: círculo rojo
+  const zombieGfx = this.make.graphics({ x: 0, y: 0, add: false });
+  zombieGfx.fillStyle(0xff0000, 1);
+  zombieGfx.fillCircle(14, 14, 14);
+  zombieGfx.lineStyle(2, 0x770000, 1);
+  zombieGfx.strokeCircle(14, 14, 14);
+  zombieGfx.generateTexture('zombie', 28, 28);
+  zombieGfx.destroy();
+}
+
+// ==============================
+// CREATE
+// ==============================
+function create() {
+  // Reset de estado (útil al reiniciar la escena)
+  playerHealth = MAX_HEALTH;
+  isGameOver = false;
+  lastFired = 0;
+  lastHitTime = 0;
+
+  // ----- Jugador -----
+  player = this.physics.add.image(400, 300, 'player');
+  player.setCollideWorldBounds(true);
+  player.setDrag(600, 600);
+  player.setMaxVelocity(PLAYER_SPEED);
+
+  // ----- Grupo de balas -----
+  bullets = this.physics.add.group({
+    defaultKey: 'bullet',
+    maxSize: 100
+  });
+
+  // ----- Grupo de zombies -----
+  zombies = this.physics.add.group();
+
+  // ----- Input teclado (WASD) -----
+  wasdKeys = this.input.keyboard.addKeys({
+    up: Phaser.Input.Keyboard.KeyCodes.W,
+    down: Phaser.Input.Keyboard.KeyCodes.S,
+    left: Phaser.Input.Keyboard.KeyCodes.A,
+    right: Phaser.Input.Keyboard.KeyCodes.D
+  });
+
+  restartKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.R);
+
+  // ----- Input ratón: disparo con clic izquierdo -----
+  this.input.on('pointerdown', (p) => {
+    if (p.leftButtonDown() && !isGameOver) {
+      shoot(this, p);
+    }
+  });
+
+  // ----- HUD -----
+  healthText = this.add.text(16, 16, 'Vida: ❤️❤️❤️', {
+    fontSize: '20px',
+    fontFamily: 'Arial',
+    color: '#ffffff'
+  }).setScrollFactor(0).setDepth(10);
+
+  gameOverText = this.add.text(400, 300, '', {
+    fontSize: '40px',
+    fontFamily: 'Arial',
+    color: '#ff3333',
+    align: 'center'
+  }).setOrigin(0.5).setDepth(20).setVisible(false);
+
+  // ----- Colisiones -----
+  // Bala vs Zombie: destruye ambos (bala y zombie)
+  this.physics.add.overlap(bullets, zombies, onBulletHitsZombie, null, this);
+
+  // Zombie vs Jugador: resta vida
+  this.physics.add.overlap(player, zombies, onZombieHitsPlayer, null, this);
+
+  // ----- Spawner de zombies -----
+  scheduleNextZombie(this);
+}
+
+// ==============================
+// UPDATE (loop principal)
+// ==============================
+function update(time, delta) {
+  if (isGameOver) {
+    if (Phaser.Input.Keyboard.JustDown(restartKey)) {
+      restartGame(this);
+    }
+    return;
+  }
+
+  handleMovement();
+  handleRotation();
+  handleZombieAI();
+  cleanupBullets();
+}
+
+// ------------------------------
+// Movimiento del jugador (8 direcciones)
+// ------------------------------
+function handleMovement() {
+  const moveVector = new Phaser.Math.Vector2(0, 0);
+
+  if (wasdKeys.left.isDown)  moveVector.x -= 1;
+  if (wasdKeys.right.isDown) moveVector.x += 1;
+  if (wasdKeys.up.isDown)    moveVector.y -= 1;
+  if (wasdKeys.down.isDown)  moveVector.y += 1;
+
+  if (moveVector.length() > 0) {
+    moveVector.normalize();
+    player.setVelocity(moveVector.x * PLAYER_SPEED, moveVector.y * PLAYER_SPEED);
+  } else {
+    player.setVelocity(0, 0);
+  }
+}
+
+// ------------------------------
+// Rotación del jugador hacia el cursor
+// ------------------------------
+function handleRotation() {
+  const p = player.scene.input.activePointer;
+  const worldPoint = p.positionToCamera(player.scene.cameras.main);
+
+  const angle = Phaser.Math.Angle.Between(
+    player.x, player.y,
+    worldPoint.x, worldPoint.y
+  );
+
+  player.rotation = angle;
+}
+
+// ------------------------------
+// Disparo
+// ------------------------------
+function shoot(scene, pointerObj) {
+  const now = scene.time.now;
+  if (now < lastFired + FIRE_COOLDOWN) return;
+  lastFired = now;
+
+  const bullet = bullets.get(player.x, player.y);
+  if (!bullet) return;
+
+  bullet.setActive(true);
+  bullet.setVisible(true);
+  if (bullet.body) {
+    bullet.body.enable = true;
+  }
+
+  bullet.setPosition(player.x, player.y);
+
+  const angle = player.rotation;
+  scene.physics.velocityFromRotation(angle, BULLET_SPEED, bullet.body.velocity);
+
+  bullet.lifespan = 1500;
+  bullet.spawnTime = scene.time.now;
+}
+
+// ------------------------------
+// Limpieza de balas fuera de pantalla o caducadas
+// ------------------------------
+function cleanupBullets() {
+  bullets.children.each((bullet) => {
+    if (!bullet.active) return;
+
+    const outOfBounds =
+      bullet.x < -20 || bullet.x > 820 ||
+      bullet.y < -20 || bullet.y > 620;
+
+    const expired = (game.loop.time - bullet.spawnTime) > bullet.lifespan;
+
+    if (outOfBounds || expired) {
+      deactivateBullet(bullet);
+    }
+  });
+}
+
+function deactivateBullet(bullet) {
+  bullet.setActive(false);
+  bullet.setVisible(false);
+  if (bullet.body) {
+    bullet.body.stop();
+    bullet.body.enable = false;
+  }
+}
+
+// ==============================
+// ZOMBIES
+// ==============================
+
+// ------------------------------
+// Programa el siguiente spawn de zombie (entre 2 y 3 segundos)
+// ------------------------------
+function scheduleNextZombie(scene) {
+  const delay = Phaser.Math.Between(ZOMBIE_SPAWN_MIN, ZOMBIE_SPAWN_MAX);
+  zombieSpawnTimer = scene.time.addEvent({
+    delay: delay,
+    callback: () => {
+      if (!isGameOver) {
+        spawnZombie(scene);
+      }
+      scheduleNextZombie(scene);
+    }
+  });
+}
+
+// ------------------------------
+// Crea un zombie fuera de la pantalla en un borde aleatorio
+// ------------------------------
+function spawnZombie(scene) {
+  const side = Phaser.Math.Between(0, 3); // 0=arriba, 1=abajo, 2=izquierda, 3=derecha
+  let x, y;
+  const margin = 40;
+
+  switch (side) {
+    case 0: // arriba
+      x = Phaser.Math.Between(0, 800);
+      y = -margin;
+      break;
+    case 1: // abajo
+      x = Phaser.Math.Between(0, 800);
+      y = 600 + margin;
+      break;
+    case 2: // izquierda
+      x = -margin;
+      y = Phaser.Math.Between(0, 600);
+      break;
+    case 3: // derecha
+      x = 800 + margin;
+      y = Phaser.Math.Between(0, 600);
+      break;
+  }
+
+  const zombie = scene.physics.add.image(x, y, 'zombie');
+  zombies.add(zombie);
+  zombie.setCollideWorldBounds(false);
+}
+
+// ------------------------------
+// IA: cada zombie se mueve directamente hacia el jugador
+// ------------------------------
+function handleZombieAI() {
+  zombies.children.each((zombie) => {
+    if (!zombie.active) return;
+
+    player.scene.physics.moveToObject(zombie, player, ZOMBIE_SPEED);
+
+    // Opcional: que el zombie "mire" hacia el jugador
+    const angle = Phaser.Math.Angle.Between(zombie.x, zombie.y, player.x, player.y);
+    zombie.rotation = angle;
+  });
+}
+
+// ==============================
+// COLISIONES
+// ==============================
+
+// ------------------------------
+// Bala impacta zombie -> ambos desaparecen
+// ------------------------------
+function onBulletHitsZombie(bullet, zombie) {
+  deactivateBullet(bullet);
+  zombie.destroy();
+}
+
+// ------------------------------
+// Zombie toca al jugador -> pierde vida
+// ------------------------------
+function onZombieHitsPlayer(playerObj, zombie) {
+  const scene = playerObj.scene;
+  const now = scene.time.now;
+
+  // Cooldown de invulnerabilidad para no perder varias vidas en el mismo contacto sostenido
+  if (now < lastHitTime + ZOMBIE_HIT_COOLDOWN) return;
+  lastHitTime = now;
+
+  zombie.destroy();
+  playerHealth -= 1;
+  updateHealthText();
+
+  if (playerHealth <= 0) {
+    triggerGameOver(scene);
+  }
+}
+
+// ==============================
+// HUD / VIDA
+// ==============================
+function updateHealthText() {
+  const hearts = '❤️'.repeat(Math.max(playerHealth, 0)) + '🖤'.repeat(MAX_HEALTH - Math.max(playerHealth, 0));
+  healthText.setText('Vida: ' + hearts);
+}
+
+// ==============================
+// GAME OVER
+// ==============================
+function triggerGameOver(scene) {
+  isGameOver = true;
+
+  // Detiene spawns y movimiento
+  if (zombieSpawnTimer) zombieSpawnTimer.remove(false);
+
+  player.setVelocity(0, 0);
+  zombies.children.each((z) => z.setVelocity(0, 0));
+
+  gameOverText.setText('GAME OVER\nPresiona R para reiniciar').setVisible(true);
+
+  scene.physics.pause();
+}
+
+// ------------------------------
+// Reinicio del juego
+// ------------------------------
+function restartGame(scene) {
+  scene.physics.resume();
+  scene.scene.restart();
+}
+
+</script>
+</body>
+</html>
