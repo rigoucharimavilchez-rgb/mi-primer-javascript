@@ -68,7 +68,7 @@ const BULLET_SPEED = 700;
 // --- Escopeta ---
 const SHOTGUN_PELLETS = 4;          // balas por disparo
 const SHOTGUN_SPREAD_DEG = 22;      // ángulo total del abanico
-const FIRE_COOLDOWN = 500;          // ms entre disparos (más lento que el arma anterior)
+const FIRE_COOLDOWN = 500;          // ms entre disparos
 
 // --- Zombies comunes ---
 const ZOMBIE_SPEED = 90;
@@ -80,10 +80,20 @@ const ZOMBIE_HIT_COOLDOWN = 800;    // ms de invulnerabilidad tras recibir daño
 const TANK_SPAWN_CHANCE = 10;   // %
 const BOOMER_SPAWN_CHANCE = 15; // %
 
+// --- Tamaños visuales objetivo (en píxeles de pantalla) ---
+// Como las imágenes externas no tienen todas el mismo tamaño nativo,
+// forzamos un tamaño de display consistente para cada tipo.
+const PLAYER_DISPLAY_SIZE = 40;
+const ZOMBIE_COMMON_DISPLAY_SIZE = 34;
+const ZOMBIE_TANK_DISPLAY_SIZE = 68;   // el doble que el común
+const ZOMBIE_BOOMER_DISPLAY_SIZE = 34;
+const BULLET_DISPLAY_SIZE = 10;
+
 // --- Definición de tipos de zombie ---
 const ZOMBIE_TYPES = {
   common: {
     key: 'zombie_common',
+    displaySize: ZOMBIE_COMMON_DISPLAY_SIZE,
     speed: ZOMBIE_SPEED,
     health: 1,
     score: 10,
@@ -91,13 +101,15 @@ const ZOMBIE_TYPES = {
   },
   tank: {
     key: 'zombie_tank',
+    displaySize: ZOMBIE_TANK_DISPLAY_SIZE,
     speed: Math.round(ZOMBIE_SPEED * 0.6), // 40% más lento
     health: 5,
     score: 50,
     explosive: false
   },
   boomer: {
-    key: 'zombie_boomer',
+    key: 'zombie_boomer', // sigue siendo una textura generada (ver nota más abajo)
+    displaySize: ZOMBIE_BOOMER_DISPLAY_SIZE,
     speed: ZOMBIE_SPEED,
     health: 1,
     score: 30,
@@ -117,43 +129,22 @@ const game = new Phaser.Game(config);
 // PRELOAD
 // ==============================
 function preload() {
-  // Generamos texturas simples con Graphics (sin assets externos).
+  // ----- Imágenes externas reales (sprites PNG) -----
+  // Nota: usamos assets públicos del propio CDN oficial de ejemplos de Phaser
+  // porque 'https://phaser.io' es la web del framework, no un archivo de imagen,
+  // y cargarla como textura fallaría. Cuando tengas tu propio arte, simplemente
+  // reemplaza estas URLs por las tuyas (por ejemplo, imágenes .png subidas a tu
+  // propio repo de GitHub y servidas vía raw.githubusercontent.com).
+  this.load.image('player', 'https://labs.phaser.io/assets/sprites/phaser-dude.png');
+  this.load.image('zombie_common', 'https://cdn.phaserfiles.com/v355/src/games/firstgame/assets/bomb.png');
+  this.load.image('zombie_tank', 'https://labs.phaser.io/assets/sprites/red_ball.png');
+  this.load.image('bullet', 'https://cdn.phaserfiles.com/v355/src/games/firstgame/assets/star.png');
 
-  // Textura del jugador: círculo verde con marca de "cañón"
-  const playerGfx = this.make.graphics({ x: 0, y: 0, add: false });
-  playerGfx.fillStyle(0x00ff66, 1);
-  playerGfx.fillCircle(16, 16, 16);
-  playerGfx.fillStyle(0xffffff, 1);
-  playerGfx.fillRect(16, 13, 14, 6);
-  playerGfx.generateTexture('player', 32, 32);
-  playerGfx.destroy();
-
-  // Textura de la bala: círculo amarillo pequeño
-  const bulletGfx = this.make.graphics({ x: 0, y: 0, add: false });
-  bulletGfx.fillStyle(0xffff00, 1);
-  bulletGfx.fillCircle(4, 4, 4);
-  bulletGfx.generateTexture('bullet', 8, 8);
-  bulletGfx.destroy();
-
-  // Textura del zombie común: círculo rojo
-  const zombieGfx = this.make.graphics({ x: 0, y: 0, add: false });
-  zombieGfx.fillStyle(0xff0000, 1);
-  zombieGfx.fillCircle(14, 14, 14);
-  zombieGfx.lineStyle(2, 0x770000, 1);
-  zombieGfx.strokeCircle(14, 14, 14);
-  zombieGfx.generateTexture('zombie_common', 28, 28);
-  zombieGfx.destroy();
-
-  // Textura del zombie Tank: círculo rojo, el doble de tamaño
-  const tankGfx = this.make.graphics({ x: 0, y: 0, add: false });
-  tankGfx.fillStyle(0xb30000, 1);
-  tankGfx.fillCircle(28, 28, 28);
-  tankGfx.lineStyle(4, 0x4d0000, 1);
-  tankGfx.strokeCircle(28, 28, 28);
-  tankGfx.generateTexture('zombie_tank', 56, 56);
-  tankGfx.destroy();
-
-  // Textura del zombie Boomer: círculo morado/verde oscuro, claramente distinto
+  // ----- Boomer: se mantiene como textura generada -----
+  // No se especificó una imagen externa para el Boomer, así que seguimos
+  // generándola con Graphics (círculo morado) para que conserve su identidad
+  // visual distintiva. Puedes cargar una imagen real para él más adelante
+  // con la misma técnica que las demás.
   const boomerGfx = this.make.graphics({ x: 0, y: 0, add: false });
   boomerGfx.fillStyle(0x8e44ad, 1);
   boomerGfx.fillCircle(16, 16, 16);
@@ -175,10 +166,11 @@ function create() {
   lastHitTime = 0;
 
   // ----- Jugador -----
-  player = this.physics.add.image(400, 300, 'player');
+  player = this.physics.add.sprite(400, 300, 'player');
   player.setCollideWorldBounds(true);
   player.setDrag(600, 600);
   player.setMaxVelocity(PLAYER_SPEED);
+  fitCircleBody(player, PLAYER_DISPLAY_SIZE);
 
   // ----- Grupo de balas -----
   bullets = this.physics.add.group({
@@ -258,6 +250,25 @@ function update(time, delta) {
 }
 
 // ------------------------------
+// Ajusta el tamaño visual de un sprite y sincroniza su cuerpo físico
+// circular para que coincida con el tamaño que se ve en pantalla.
+// Esto es necesario porque las imágenes externas no vienen todas del
+// mismo tamaño nativo en píxeles.
+// ------------------------------
+function fitCircleBody(sprite, displayDiameter) {
+  sprite.setDisplaySize(displayDiameter, displayDiameter);
+
+  // setCircle() espera un radio en el espacio "sin escalar" del frame;
+  // Phaser lo multiplica internamente por la escala actual del sprite.
+  const radius = (displayDiameter / 2) / sprite.scaleX;
+  sprite.body.setCircle(radius);
+  sprite.body.setOffset(
+    (sprite.width - radius * 2) / 2,
+    (sprite.height - radius * 2) / 2
+  );
+}
+
+// ------------------------------
 // Movimiento del jugador (8 direcciones)
 // ------------------------------
 function handleMovement() {
@@ -302,8 +313,6 @@ function shoot(scene) {
   const baseAngle = player.rotation;
   const spreadRad = Phaser.Math.DegToRad(SHOTGUN_SPREAD_DEG);
 
-  // Calculamos el ángulo de cada perdigón repartido simétricamente
-  // alrededor del ángulo base (abanico).
   const angleStep = SHOTGUN_PELLETS > 1 ? spreadRad / (SHOTGUN_PELLETS - 1) : 0;
   const startAngle = baseAngle - spreadRad / 2;
 
@@ -327,6 +336,7 @@ function fireBullet(scene, angle) {
   }
 
   bullet.setPosition(player.x, player.y);
+  fitCircleBody(bullet, BULLET_DISPLAY_SIZE);
 
   scene.physics.velocityFromRotation(angle, BULLET_SPEED, bullet.body.velocity);
 
@@ -404,7 +414,7 @@ function rollZombieType() {
 function spawnZombie(scene) {
   const side = Phaser.Math.Between(0, 3); // 0=arriba, 1=abajo, 2=izquierda, 3=derecha
   let x, y;
-  const margin = 60; // margen amplio para que quepa el Tank sin verse recortado
+  const margin = 70; // margen amplio para que quepa el Tank sin verse recortado
 
   switch (side) {
     case 0: // arriba
@@ -428,9 +438,10 @@ function spawnZombie(scene) {
   const typeName = rollZombieType();
   const typeData = ZOMBIE_TYPES[typeName];
 
-  const zombie = scene.physics.add.image(x, y, typeData.key);
+  const zombie = scene.physics.add.sprite(x, y, typeData.key);
   zombies.add(zombie);
   zombie.setCollideWorldBounds(false);
+  fitCircleBody(zombie, typeData.displaySize);
 
   // Guardamos toda la info de gameplay en el propio objeto (data manager de Phaser)
   zombie.setData('type', typeName);
@@ -438,16 +449,10 @@ function spawnZombie(scene) {
   zombie.setData('health', typeData.health);
   zombie.setData('scoreValue', typeData.score);
   zombie.setData('explosive', typeData.explosive);
-
-  // Ajustamos el radio del cuerpo físico según el tamaño real de la textura
-  // (el Tank es el doble de grande, así que su hitbox también debe serlo).
-  const bodyRadius = zombie.width / 2;
-  zombie.body.setCircle(bodyRadius);
 }
 
 // ------------------------------
 // IA: cada zombie se mueve directamente hacia el jugador
-// (cada tipo usa su propia velocidad guardada en su data)
 // ------------------------------
 function handleZombieAI() {
   zombies.children.each((zombie) => {
@@ -456,7 +461,6 @@ function handleZombieAI() {
     const speed = zombie.getData('speed');
     player.scene.physics.moveToObject(zombie, player, speed);
 
-    // Que el zombie "mire" hacia el jugador
     const angle = Phaser.Math.Angle.Between(zombie.x, zombie.y, player.x, player.y);
     zombie.rotation = angle;
   });
@@ -478,7 +482,7 @@ function onBulletHitsZombie(bullet, zombie) {
   const remainingHealth = zombie.getData('health') - 1;
   zombie.setData('health', remainingHealth);
 
-  // Pequeño feedback visual de impacto (parpadeo) para zombies con más de 1 de vida, como el Tank
+  // Pequeño feedback visual de impacto (parpadeo), útil sobre todo en el Tank
   zombie.setTintFill(0xffffff);
   zombie.scene.time.delayedCall(80, () => {
     if (zombie.active) zombie.clearTint();
@@ -499,16 +503,14 @@ function onZombieHitsPlayer(playerObj, zombie) {
   const scene = playerObj.scene;
 
   if (zombie.getData('explosive')) {
-    // El Boomer explota al tocar al jugador: el daño lo aplica la propia explosión
     const x = zombie.x;
     const y = zombie.y;
-    zombies.remove(zombie, true, true); // quita del grupo y destruye
+    zombies.remove(zombie, true, true);
     triggerExplosion(scene, x, y);
     return;
   }
 
   const now = scene.time.now;
-  // Cooldown de invulnerabilidad para no perder varias vidas en el mismo contacto sostenido
   if (now < lastHitTime + ZOMBIE_HIT_COOLDOWN) return;
   lastHitTime = now;
 
@@ -539,7 +541,6 @@ function killZombie(zombie) {
 // EXPLOSIÓN DEL BOOMER
 // ==============================
 function triggerExplosion(scene, x, y) {
-  // Efecto visual: un círculo que se expande y se desvanece
   const explosionGfx = scene.add.circle(x, y, 10, 0x9dff00, 0.6);
   explosionGfx.setDepth(15);
 
@@ -550,7 +551,6 @@ function triggerExplosion(scene, x, y) {
     duration: EXPLOSION_DURATION,
     ease: 'Cubic.Out',
     onUpdate: (tween, target) => {
-      // Phaser.GameObjects.Arc soporta redimensionar el radio directamente
       explosionGfx.setRadius(target.radius);
     },
     onComplete: () => {
@@ -558,7 +558,6 @@ function triggerExplosion(scene, x, y) {
     }
   });
 
-  // Daño instantáneo si el jugador está dentro del radio de la explosión
   if (!isGameOver) {
     const distance = Phaser.Math.Distance.Between(x, y, player.x, player.y);
     if (distance <= EXPLOSION_RADIUS) {
@@ -607,7 +606,6 @@ function updateHealthText() {
 function triggerGameOver(scene) {
   isGameOver = true;
 
-  // Detiene spawns y movimiento
   if (zombieSpawnTimer) zombieSpawnTimer.remove(false);
 
   player.setVelocity(0, 0);
