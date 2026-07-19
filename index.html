@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zombie Shooter - Left 4 Dead Style</title>
+    <!-- Importamos el motor de juegos Phaser 3 -->
+    <script src="https://jsdelivr.net"></script>
+    <style>
+        body { margin: 0; background-color: #000; overflow: hidden; }
+        canvas { display: block; margin: 0 auto; }
+    </style>
+</head>
+<body>
+<script>
+    // Configuración base del motor de físicas del juego
+    const config = {
+        type: Phaser.AUTO,
+        width: 800,
+        height: 600,
+        physics: {
+            default: 'arcade',
+            arcade: { gravity: { y: 0 }, debug: false }
+        },
+        scene: { preload: preload, create: create, update: update }
+    };
+
+    const game = new Phaser.Game(config);
+
+    function preload() {
+        // Aquí cargaremos los sprites que tus IA te ayuden a programar
+    }
+
+    function create() {
+        console.log("¡Motor listo!");
+        
+        // Texto temporal en pantalla
+        this.add.text(400, 300, 'Prototipo de Zombies Cargado\nListo para programar', {
+            fontSize: '24px',
+            fill: '#fff',
+            align: 'center'
+        }).setOrigin(0.5);
+    }
+
+    function update() {
+        // Aquí irá la lógica de movimiento y disparo en tiempo real
+    }
+</script>
+</body>
+</html>
